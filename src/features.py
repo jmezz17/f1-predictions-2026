@@ -141,24 +141,65 @@ def build_feature_matrix(
             "is_rookie": 1 if driver in ROOKIES_2026 else 0,
         }
 
-        # Add targets if this round exists in races_dict (training mode)
+         # Add targets if this round exists in races_dict (training mode)
         if round_number in races_dict:
+            gaps = compute_gap_to_winner(races_dict, round_number)
             race_df = races_dict[round_number]
             race_row = race_df[race_df["Driver"] == driver]
             if not race_row.empty:
                 feature["target_position"] = race_row["Position"].values[0]
-                feature["target_race_time"] = race_row["RaceTime"].values[0]
+                feature["target_gap"] = gaps.get(driver, np.nan)
             else:
                 feature["target_position"] = np.nan
-                feature["target_race_time"] = np.nan
+                feature["target_gap"] = np.nan
         else:
             # Prediction mode - no targets yet
             feature["target_position"] = np.nan
-            feature["target_race_time"] = np.nan
+            feature["target_gap"] = np.nan
 
         rows.append(feature)
 
     return pd.DataFrame(rows).reset_index(drop=True)
+
+def compute_gap_to_winner(races_dict: dict, round_number: int) -> dict:
+    """
+    Compute each driver's gap to the race winner in seconds.
+    Returns a dict of {driver_code: gap_seconds}.
+    Winner gets 0.0, DNFs get NaN.
+    """
+    if round_number not in races_dict:
+        return {}
+
+    race_df = races_dict[round_number].copy()
+
+    # Find the winner's race time (P1 finisher)
+    finishers = race_df.dropna(subset=["RaceTime", "Position"])
+    if finishers.empty:
+        return {}
+
+    winner_time = finishers.loc[finishers["Position"].idxmin(), "RaceTime"]
+
+    gaps = {}
+    for _, row in race_df.iterrows():
+        driver = row["Driver"]
+        race_time = row["RaceTime"]
+        status = str(row.get("Status", ""))
+
+        # Only compute gap for classified finishers
+        is_finisher = (
+            pd.notna(race_time) and
+            status not in ["Retired", "Accident", "Collision", 
+                          "Engine", "Gearbox", "Mechanical",
+                          "Disqualified", "Withdrew", "DNS"]
+            and race_time > 0
+        )
+
+        if is_finisher:
+            gaps[driver] = race_time - winner_time
+        else:
+            gaps[driver] = np.nan  # DNF, DSQ, DNS
+
+    return gaps
 
 
 if __name__ == "__main__":
@@ -175,6 +216,10 @@ if __name__ == "__main__":
         if not df.empty:
             races[r] = df
 
+    # # Debug - check raw race data for round 3
+    # print("\nRaw race data Round 3:")
+    # print(races[3][["Driver", "Position", "Status", "RaceTime"]].to_string(index=False))
+
     # Load quali for round 3
     quali = get_quali_results(2024, 3)
 
@@ -185,5 +230,5 @@ if __name__ == "__main__":
     print(features[[
         "Driver", "TeamName", "grid_position", "team_tier",
         "circuit_type_encoded", "driver_form", "is_rookie",
-        "target_position"
+        "target_position", "target_gap"
     ]].to_string(index=False))
